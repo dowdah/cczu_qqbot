@@ -13,13 +13,35 @@ QQBOT_APPID = os.getenv("QQBOT_APPID")
 QQBOT_TOKEN = os.getenv("QQBOT_TOKEN")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-class CHANNEL_ID:
-    GPT = '633607434'
-    UNIVERSAL = '633601073'
+
+class Permission:
+    ALLOW_GPT = 1
+    ALLOW_USERS_COMMAND = 2
+
+
+class Channel:
+    def __init__(self, channel_id, name, permissions):
+        self.channel_id = channel_id
+        self.name = name
+        self.permissions = permissions
+
+    def add_permission(self, permission):
+        self.permissions |= permission
+
+    def remove_permission(self, permission):
+        self.permissions &= ~permission
+
+    def has_permission(self, permission):
+        return self.permissions & permission == permission
 
 
 if QQBOT_APPID is None or QQBOT_TOKEN is None:
     raise ValueError("QQBOT_APPID, QQBOT_TOKEN, OPENAI_API_KEY 不能为空")
+with open(f"{BASE_DIR}/channels.json", "r") as f:
+    channels = json.load(f)
+    channel_dict = dict()
+    for channel in channels:
+        channel_dict[channel["channel_id"]] = Channel(channel["channel_id"], channel["name"], channel["permissions"])
 
 _log = logging.get_logger()
 
@@ -71,12 +93,25 @@ async def reset_command(api: BotAPI, message, params=None):
         reset_msg(message.author.id)
         reply_content = "重置成功"
     elif isinstance(message, Message):
-        if message.channel_id == CHANNEL_ID.GPT:
+        if channel_dict[message.channel_id].has_permission(Permission.ALLOW_GPT):
             reset_msg(message.author.id)
             reply_content = "重置成功"
         else:
             reply_content = "错误: 该频道不支持该指令"
     await message.reply(content=reply_content)
+    return True
+
+
+@Commands(name="users")
+async def users_command(api: BotAPI, message, params=None):
+    _log.info(params)
+    reply_content = "昵称|ID|是否为机器人\n"
+    members = await api.get_guild_members(message.guild_id)
+    for member in members:
+        reply_content += f"{member['user']['username']}|{member['user']['id']}|{'是' if member['user']['bot'] else '否'}\n"
+    dms_guild_id = await api.create_dms(guild_id=message.guild_id, user_id=message.author.id)
+    dms_guild_id = dms_guild_id['guild_id']
+    await api.post_dms(guild_id=dms_guild_id, content=reply_content)
     return True
 
 
@@ -92,7 +127,7 @@ async def say_command(api: BotAPI, message, params=None):
         msgs.append({'role': 'assistant', 'content': reply_content})
         save_msg(message.author.id, msgs)
     elif isinstance(message, Message):
-        if message.channel_id == CHANNEL_ID.GPT:
+        if channel_dict[message.channel_id].has_permission(Permission.ALLOW_GPT):
             if params is None:
                 reply_content = "错误: 该指令需要参数"
             else:
@@ -119,7 +154,8 @@ class MyClient(botpy.Client):
         handlers = [
             help_command,
             reset_command,
-            say_command
+            say_command,
+            users_command
         ]
         for handler in handlers:
             if await handler(api=self.api, message=message):
