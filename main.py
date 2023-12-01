@@ -2,9 +2,11 @@
 import asyncio
 import os
 import json
+import re
 
 import botpy
 import gpt
+import cczu_spider
 from botpy import logging, BotAPI
 from botpy.message import Message, DirectMessage
 from botpy.ext.command_util import Commands
@@ -12,11 +14,17 @@ from botpy.ext.command_util import Commands
 QQBOT_APPID = os.getenv("QQBOT_APPID")
 QQBOT_TOKEN = os.getenv("QQBOT_TOKEN")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+USER_INFO_FILE = f"{BASE_DIR}/user_info.json"
 
 
 class Permission:
     ALLOW_GPT = 1
     ALLOW_USERS_COMMAND = 2
+
+
+class CHANNEL_ID:
+    UNIVERSAL = os.getenv("UNIVERSAL_CHANNEL")
+    GPT = os.getenv("GPT_CHANNEL")
 
 
 class Channel:
@@ -41,39 +49,58 @@ with open(f"{BASE_DIR}/channels.json", "r") as f:
     channels = json.load(f)
     channel_dict = dict()
     for channel in channels:
-        channel_dict[channel["channel_id"]] = Channel(channel["channel_id"], channel["name"], channel["permissions"])
+        channel_dict[channel["id"]] = Channel(channel["id"], channel["name"], channel["permissions"])
 
 _log = logging.get_logger()
 
 
 def load_msg(user_id):
-    with open(f"{BASE_DIR}/gpt_msgs.json", "r") as f:
-        gpt_msgs = json.load(f)
-    if user_id not in gpt_msgs.keys():
+    with open(USER_INFO_FILE, "r") as f:
+        user_info = json.load(f)
+    if user_id not in user_info.keys():
         return []
     else:
-        return gpt_msgs[user_id]["msgs"]
+        return user_info[user_id]["msgs"]
 
 
 def save_msg(user_id, msg):
-    with open(f"{BASE_DIR}/gpt_msgs.json", "r") as f:
-        gpt_msgs = json.load(f)
-    if user_id not in gpt_msgs.keys():
-        gpt_msgs[user_id] = {}
-    gpt_msgs[user_id]["msgs"] = msg
-    with open(f"{BASE_DIR}/gpt_msgs.json", "w") as f:
-        json.dump(gpt_msgs, f, ensure_ascii=False)
+    with open(USER_INFO_FILE, "r") as f:
+        user_info = json.load(f)
+    if user_id not in user_info.keys():
+        user_info[user_id] = {}
+    user_info[user_id]["msgs"] = msg
+    with open(USER_INFO_FILE, "w") as f:
+        json.dump(user_info, f, ensure_ascii=False)
 
 
 def reset_msg(user_id):
-    with open(f"{BASE_DIR}/gpt_msgs.json", "r") as f:
-        gpt_msgs = json.load(f)
-    if user_id not in gpt_msgs.keys():
+    with open(USER_INFO_FILE, "r") as f:
+        user_info = json.load(f)
+    if user_id not in user_info.keys():
         return
     else:
-        gpt_msgs[user_id]["msgs"] = []
-    with open(f"{BASE_DIR}/gpt_msgs.json", "w") as f:
-        json.dump(gpt_msgs, f, ensure_ascii=False)
+        user_info[user_id]["msgs"] = []
+    with open(USER_INFO_FILE, "w") as f:
+        json.dump(user_info, f, ensure_ascii=False)
+
+
+def get_student_id(user_id):
+    with open(USER_INFO_FILE, "r") as f:
+        user_info = json.load(f)
+    if user_id not in user_info.keys():
+        return None
+    else:
+        return user_info[user_id]["student_id"] if user_info[user_id]["student_id"] != "" else None
+
+
+def set_student_id(user_id, student_id):
+    with open(USER_INFO_FILE, "r") as f:
+        user_info = json.load(f)
+    if user_id not in user_info.keys():
+        user_info[user_id] = {}
+    user_info[user_id]["student_id"] = student_id
+    with open(USER_INFO_FILE, "w") as f:
+        json.dump(user_info, f, ensure_ascii=False)
 
 
 @Commands(name="help")
@@ -144,6 +171,44 @@ async def say_command(api: BotAPI, message, params=None):
     return True
 
 
+@Commands(name="bind")
+async def bind_command(api: BotAPI, message, params=None):
+    _log.info(params)
+    if isinstance(message, DirectMessage):
+        reply_content = f"错误: 该指令只能在群组中使用"
+    elif isinstance(message, Message):
+        if params is None:
+            reply_content = "错误: 该指令需要参数"
+        elif re.match(r"^\d{10}$", params) is None:
+            reply_content = "错误: 该指令的参数必须为10位数字"
+        else:
+            set_student_id(message.author.id, params)
+            reply_content = f"绑定成功，你的学号为 {params}"
+    await message.reply(content=reply_content)
+    return True
+
+
+@Commands(name="clockinnum")
+async def clockinnum_command(api: BotAPI, message, params=None):
+    _log.info(params)
+    if isinstance(message, DirectMessage):
+        reply_content = f"错误: 该指令只能在群组中使用"
+    elif isinstance(message, Message):
+        student_id = get_student_id(message.author.id)
+        if params:
+            reply_content = f"错误: 该指令不需要参数。请使用 /bind 指令绑定你的学号。"
+        elif student_id is None:
+            reply_content = f"请先使用 /bind 指令绑定你的学号。"
+        else:
+            reply_content = f"正在与学校查询网站通讯，请等待。(按照历史记录，平均等待时间为31秒)"
+            await message.reply(content=reply_content)
+            reply_content = cczu_spider.get_pe_clockin_info(get_student_id(message.author.id))
+            # if reply_content is None:
+            #     reply_content = f"错误: 与学校查询网站通讯失败，请稍后再试。"
+    await message.reply(content=reply_content)
+    return True
+
+
 class MyClient(botpy.Client):
     async def on_ready(self):
         _log.info(f"robot 「{self.robot.name}」 on_ready!")
@@ -155,7 +220,9 @@ class MyClient(botpy.Client):
             help_command,
             reset_command,
             say_command,
-            users_command
+            users_command,
+            bind_command,
+            clockinnum_command
         ]
         for handler in handlers:
             if await handler(api=self.api, message=message):
