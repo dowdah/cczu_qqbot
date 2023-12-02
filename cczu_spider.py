@@ -21,7 +21,7 @@ def get_pe_clockin_info(stu_id):
         return PE_CLOCKIN_NUM_CHECK_ERROR_MSG
     if r.status_code != 200:
         return PE_CLOCKIN_NUM_CHECK_ERROR_MSG
-    soup = BeautifulSoup(r.text, 'lxml')
+    soup = BeautifulSoup(r.text, 'html.parser')
     try:
         c_i = [s.text.strip() for s in soup.find_all('div', class_='div_container')[0].find_all('tr')[1].find_all('td')]
     except IndexError:
